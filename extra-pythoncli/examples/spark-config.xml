@@ -1,0 +1,12 @@
+<sparkjob>
+	<jobname>spark</jobname>
+	<jarfile>spark.jar</jarfile>
+	<jobtype>Spark</jobtype>
+	<mainclass>org.apache.spark.examples.SparkPi</mainclass>
+	<config>
+		<spark.driver.memory>5g</spark.driver.memory>
+		<spark.executor.memory>1g</spark.executor.memory>
+		<spark.executor.disk>2g</spark.executor.disk>
+	</config>
+	<arg>10</arg>
+</sparkjob>

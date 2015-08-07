@@ -1,0 +1,7 @@
+<sparkjob>
+	<jobname>spark</jobname>
+	<jarfile>spark.jar</jarfile>
+	<jobtype>Spark</jobtype>
+	<mainclass>org.apache.spark.examples.SparkPi</mainclass>
+	<arg>10</arg>
+</sparkjob>

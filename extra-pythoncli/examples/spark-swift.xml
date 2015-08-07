@@ -1,0 +1,12 @@
+<sparkjob>
+	<jobname>sparkswift</jobname>
+	<swift>
+		<username>user</username>
+		<password>password</password>
+		<bucketname>test</bucketname>
+	</swift>
+	<jarfile>sparkswift.jar</jarfile>
+	<jobtype>Spark</jobtype>
+	<mainclass>org.apache.spark.examples.SparkPi</mainclass>
+	<arg>10</arg>
+</sparkjob>

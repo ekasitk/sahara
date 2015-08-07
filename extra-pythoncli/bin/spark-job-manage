@@ -1,0 +1,754 @@
+#!/usr/bin/env python
+import pycurl
+from optparse import OptionParser
+import json
+import cStringIO
+import re
+import pprint
+import os
+import sys
+from prettytable import PrettyTable
+import yaml
+import xml.etree.ElementTree as ET
+
+c=pycurl.Curl()
+post_response = cStringIO.StringIO()
+get_response = cStringIO.StringIO()
+put_response = cStringIO.StringIO()
+response_headers = cStringIO.StringIO()
+
+def sahara_post(url,data):
+    post_response.truncate(0)
+    c.setopt(pycurl.URL, url)
+    c.setopt(pycurl.POST, 1)
+    c.setopt(pycurl.POSTFIELDS, data)
+    c.setopt(pycurl.WRITEFUNCTION, post_response.write)
+    c.unsetopt(pycurl.CUSTOMREQUEST)
+    try:
+        if options.debug:
+            print "DEBUG: Sending POST request"
+            print "DEBUG: [POST] URL: " + url
+            print "DEBUG: [POST] DATA: " + data
+        c.perform()
+        c.close
+    except pycurl.error, error:
+        errno, errstr = error
+        print 'An error occurred: ', errstr	
+    return post_response
+
+def sahara_post_job(url, data, tokenid):
+    post_response.truncate(0)
+    token_headers = 'X-Auth-Token:%s' %tokenid
+    content_headers = 'Content-Type:application/json'
+    c.setopt(pycurl.HTTPHEADER, [str(content_headers),str(token_headers)])
+    c.setopt(pycurl.URL, str(url))
+    c.setopt(pycurl.POST, 1)
+    c.setopt(pycurl.POSTFIELDS, str(data))
+    c.setopt(pycurl.WRITEFUNCTION, post_response.write)
+    c.unsetopt(pycurl.CUSTOMREQUEST)
+    try:
+        if options.debug:
+            print "DEBUG: Sending POST request"
+            print "DEBUG: [POST] URL: " + url
+            print "DEBUG: [POST] DATA: " + data
+        c.perform()
+    except pycurl.error, error:
+        errno, errstr = error
+        print 'An error occurred: ', errstr	
+    return post_response.getvalue()
+
+def sahara_get(url, tokenid):
+    get_response.truncate(0)
+    token_headers = 'X-Auth-Token:%s' %tokenid
+    c.setopt(pycurl.HTTPHEADER, [str(token_headers)])
+    c.setopt(c.HEADERFUNCTION, response_headers.write)
+    c.setopt(pycurl.URL, str(url))
+    c.setopt(pycurl.HTTPGET, 1)
+    c.setopt(pycurl.WRITEFUNCTION, get_response.write)
+    c.unsetopt(pycurl.CUSTOMREQUEST)
+    try:
+        if options.debug:
+            print "DEBUG: Sending GET request"
+            print "DEBUG: [GET] URL: " + url
+            print "DEBUG: [GET] HEADER: " + token_headers
+        c.perform()
+    except pycurl.error, error:
+        errno, errstr = error
+        print 'An error occurred: ', errstr
+    return get_response, response_headers 
+
+def sahara_put(jarfile, url, tokenid):
+    token_headers = 'X-Auth-Token:%s' %tokenid
+    url = url+jarfile.split("/")[-1]
+    c.setopt(pycurl.URL, str(url)) 		
+    content_headers = 'Content-Type:application/json'
+    c.setopt(pycurl.HTTPHEADER, [str(token_headers)])
+    c.setopt(pycurl.UPLOAD, 1)
+    c.setopt(pycurl.READFUNCTION, open(jarfile, 'rb').read)
+    filesize = os.path.getsize(jarfile)
+    c.setopt(pycurl.CUSTOMREQUEST, "PUT")
+    c.setopt(pycurl.INFILESIZE, filesize)
+    c.setopt(pycurl.WRITEFUNCTION, put_response.write)
+    try:
+        if options.debug:
+            print "DEBUG: Sending PUT request"
+            print "DEBUG: [PUT] URL: " + url
+            print "DEBUG: [PUT] DATA: " + jarfile
+        c.perform()
+        results = put_response.getvalue()
+        if c.getinfo(pycurl.HTTP_CODE) == 202:
+            job_internal_id = json.loads(results)['job_binary_internal']['id']
+        else:
+            print "An error occurred"
+            os.sys.exit(2)
+    except pycurl.error, error:
+        errno, errstr = error
+        print 'An error occurred: ', errstr
+    return job_internal_id
+
+def sahara_put_swift(jarfile, url, tokenid):
+    token_headers = 'X-Auth-Token:%s' %tokenid
+    url = url+jarfile.split("/")[-1]
+    c.setopt(pycurl.URL, str(url)) 		
+    content_headers = 'Content-Type:application/json'
+    c.setopt(pycurl.HTTPHEADER, [str(token_headers)])
+    c.setopt(pycurl.UPLOAD, 1)
+    c.setopt(pycurl.READFUNCTION, open(jarfile, 'rb').read)
+    filesize = os.path.getsize(jarfile)
+    c.setopt(pycurl.CUSTOMREQUEST, "PUT")
+    c.setopt(pycurl.INFILESIZE, filesize)
+    c.setopt(pycurl.WRITEFUNCTION, put_response.write)
+    try:
+        if options.debug:
+            print "DEBUG: Sending PUT request"
+            print "DEBUG: [PUT] URL: " + url
+            print "DEBUG: [PUT] DATA: " + jarfile
+        c.perform()
+    except pycurl.error, error:
+        errno, errstr = error
+        print 'An error occurred: ', errstr
+
+def sahara_delete(url, tokenid):
+    token_headers = 'X-Auth-Token:%s' %tokenid
+    c.setopt(pycurl.HTTPHEADER, [str(token_headers)])
+    c.setopt(c.HEADERFUNCTION, response_headers.write)
+    c.setopt(pycurl.URL, str(url))
+    c.setopt(pycurl.CUSTOMREQUEST, "DELETE")
+    c.setopt(pycurl.WRITEFUNCTION, get_response.write)
+    try:
+        if options.debug:
+            print "DEBUG: Sending DELETE request"
+            print "DEBUG: [DELETE] URL: " + url
+            print "DEBUG: [DELETE] HEADER: " + token_headers
+        c.perform()
+    except pycurl.error, error:
+        errno, errstr = error
+        print 'An error occurred: ', errstr
+    return get_response, response_headers
+
+def get_token_tenant_id(username, tenantname, password):
+    auth_url = 'http://cloud.lsr.nectec.or.th:35357/v2.0/tokens'
+    c.setopt(pycurl.HTTPHEADER, ['Accept:application/json','Content-Type:application/json'])
+    auth_request = '{"auth": {"tenantName": '+'"'+str(tenantname)+'"'+', "passwordCredentials": {"username": '+'"'+str(username)+'"'+', "password": '+'"'+str(password)+'"'+'}}}'
+    sahara_post(auth_url,auth_request)
+    if(c.getinfo(pycurl.HTTP_CODE) == 200):
+        token_id = json.loads(post_response.getvalue())['access']['token']['id']
+        tenant_id = json.loads(post_response.getvalue())['access']['token']['tenant']['id']
+    else:
+        print "ERROR: authentication failed, Please check your username, password and tenant name"
+        if options.debug: print post_response.getvalue()
+        os.sys.exit(2)
+    return token_id, tenant_id
+
+def spark_submit_parser(xml_file):
+    argument= []
+    config_tag = {}
+    spark_job = {}
+    swift_tag = {}
+    tree = ET.parse(xml_file)
+    for elem in tree.iter(tag='arg'):
+        argument.append(elem.text) 
+    for elem in tree.iter(tag='jobname'):
+        spark_job['jobname'] = elem.text	
+    for elem in tree.iter(tag='jarfile'):
+        spark_job['jarfile'] = elem.text
+    for elem in tree.iter(tag='jobtype'):
+        spark_job['jobtype'] = elem.text
+    for elem in tree.iter(tag='mainclass'):
+        spark_job['mainclass'] = elem.text
+    for elem in tree.iter(tag='swift'):
+        for swift in elem.getchildren():
+            swift_tag[swift.tag] = swift.text
+    for elem in tree.iter(tag='config'):
+        for config in elem.getchildren():
+            config_tag[config.tag] = config.text
+    if spark_job.has_key('jobtype') == False:
+        print "ERROR: <jobtype> tag is not specific in xml file"
+        os.sys.exit(2)
+    elif spark_job.has_key('jarfile') == False:
+        print "ERROR: <jarfile> tag is not specific in xml file"
+        os.sys.exit(2)
+    elif spark_job.has_key('jobname') == False:
+        print "ERROR: <jobname> tag is not specific in xml file"
+        os.sys.exit(2)
+    elif spark_job.has_key('mainclass') == False:
+        print "ERROR: <mainclass> tag is not specific in xml file"
+        os.sys.exit(2)
+    return spark_job, argument, config_tag, swift_tag
+
+def spark_resubmit_parser(xml_file):
+    argument= []
+    config_tag = {}
+    spark_job = {}
+    swift_tag = {}
+    tree = ET.parse(xml_file)
+    for elem in tree.iter(tag='arg'):
+        argument.append(elem.text)
+    for elem in tree.iter(tag='jobname'):
+        spark_job['jobname'] = elem.text
+    for elem in tree.iter(tag='mainclass'):
+        spark_job['mainclass'] = elem.text
+    for elem in tree.iter(tag='swift'):
+        for swift in elem.getchildren():
+            swift_tag[swift.tag] = swift.text
+    for elem in tree.iter(tag='config'):
+        for config in elem.getchildren():
+            config_tag[config.tag] = config.text
+    if spark_job.has_key('jobname') == False:
+        print "ERROR: <jobname> tag is not specific in xml file"
+        os.sys.exit(2)
+    elif spark_job.has_key('mainclass') == False:
+        print "ERROR: <mainclass> tag is not specific in xml file"
+        os.sys.exit(2)
+    return spark_job, argument, config_tag, swift_tag
+
+def get_cluster_id(cluster_name, token_id, tenant_id):
+    clusterlist_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/clusters' %tenant_id
+    sahara_get(clusterlist_url,token_id)
+    if(c.getinfo(pycurl.HTTP_CODE) == 200):
+        results = get_response.getvalue()
+        results = json.loads(results)['clusters']
+        for result in results:
+            if(result['name'] == cluster_name):
+                cluster_id = result['id']
+                break
+            else:
+                cluster_id = False
+    else:
+        print "ERROR: cannot get cluster name"
+        if options.debug: print get_response.getvalue()
+        os.sys.exit(2)
+    return cluster_id
+
+def get_cluster_name(cluster_id, token_id, tenant_id):
+    clusterlist_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/clusters' %tenant_id
+    sahara_get(clusterlist_url,token_id)
+    if(c.getinfo(pycurl.HTTP_CODE) == 200):
+        results = get_response.getvalue()
+        results = json.loads(results)['clusters']
+        for result in results:
+            if(result['id'] == cluster_id):
+                cluster_name = result['name']
+                break
+            else:
+                cluster_name = False
+    else:
+        print "ERROR: cannot get cluster name"
+        if options.debug: print get_response.getvalue()
+        os.sys.exit(2)
+    return cluster_name
+
+def get_job_name(job_id, token_id, tenant_id):
+    joblist_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/jobs' %tenant_id
+    sahara_get(joblist_url,token_id)
+
+    if(c.getinfo(pycurl.HTTP_CODE) == 200):
+        results = get_response.getvalue()
+        results = json.loads(results)['jobs']
+        for result in results:
+            if(result['id'] == job_id):
+                job_name = result['name']
+                break
+            else:
+                job_name = False
+    else:
+        print "ERROR: cannot get job name"
+        if options.debug: print get_response.getvalue()
+        os.sys.exit(2)
+    return job_name
+
+def get_job_id(job_name, token_id, tenant_id):
+    joblist_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/jobs' %tenant_id
+    sahara_get(joblist_url,token_id)
+
+    if(c.getinfo(pycurl.HTTP_CODE) == 200):
+        results = get_response.getvalue()
+        results = json.loads(results)['jobs']
+        for result in results:
+            if(result['name'] == job_name):
+                job_id = result['id']
+                break
+            else:
+                job_id = False
+    else:
+        print "ERROR: cannot get job id"
+        if options.debug: print get_response.getvalue()
+        os.sys.exit(2)
+    return job_id
+
+def get_job_binary_id(job_id, token_id, tenant_id):
+    job_info_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/jobs/%s' %(tenant_id,job_id)
+    sahara_get(job_info_url, token_id)
+
+    if c.getinfo(pycurl.HTTP_CODE) == 200:
+        results = json.loads(get_response.getvalue())
+        return results['job']['mains'][0]['id'], results['job']['mains'][0]['url'].split('//')[-1]
+    else:
+        print "ERROR: cannot get job binary id"
+        if options.debug: print get_response.getvalue()
+        os.sys.exit(2)
+
+def get_job_executions_id_list(job_id, token_id, tenant_id):
+    joblist_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/job-executions' %(tenant_id)
+    sahara_get(joblist_url, token_id)
+
+    if c.getinfo(pycurl.HTTP_CODE) == 200:
+        job_executions_list = []
+        results = get_response.getvalue()
+        results = json.loads(results)['job_executions']
+        for result in results:
+            if result['job_id'] == job_id:
+                job_executions_list.append(result['id'])
+        return job_executions_list
+    else:
+        print "ERROR: cannot get job executions list"
+        if options.debug: print get_response.getvalue()
+        os.sys.exit(2)
+
+parser = OptionParser(usage="usage: %prog [subcommand] arguments",version="%prog 1.0",add_help_option=False)
+parser.add_option("--spark-xml-file",
+                  action="store",
+                  dest="spark_xml_file",
+                  default=False,
+                  help="Spark Job Description XML file")
+parser.add_option("--cluster-name",
+                  action="store",
+                  dest="cluster_name",
+                  default=False,
+                  help="Cluster Name")
+parser.add_option("--job-id",
+                  action="store",
+                  dest="job_id",
+                  default=False,
+                  help="Job Execution ID")
+parser.add_option("--template-name",
+                 action="store",
+                 default=False,
+                 dest="template_name",
+                 help="Template Name")
+parser.add_option("-r",
+                  action="store_true",
+                  dest="cascading_delete",
+                  help="Delete all job executions and binary referencing the job")
+parser.add_option("--debug",
+                  action="store_true",
+                  dest="debug",
+                  help="Debug mode")
+parser.add_option("--help",
+                  action="store_true",
+                  dest="help_option",
+                  help="Help option")
+
+(options, args) = parser.parse_args()
+env_var = True
+if options.debug: print "DEBUG: Fetching environment variables"
+try:
+    username = os.environ["OS_USERNAME"]
+    password = os.environ["OS_PASSWORD"]
+    tenantname = os.environ["OS_TENANT_NAME"]
+    token_id, tenant_id = get_token_tenant_id(username, tenantname, password)
+except KeyError:
+    env_var = False
+
+if options.debug: print "DEBUG: Checking number of arguments"
+if len(args) != 1:
+    if len(args) == 0:
+        print "ERROR: argument not specified for parameter"
+        print "usage: spark-job-manage [--version] [--debug] <subcommand> ..."
+        print "Positional arguments:"
+        print "  <subcommand>"
+        print "    submit               Submit a job to cluster."
+        print "    re-submit            Re-submit a job to cluster."
+        print "    list                 Print a list of job execution."
+        print "    delete               Delete a job execution."
+        print "    cancel               Cancel a job execution."
+        print "    template-delete      Delete a job template."
+        print "    template-list        Print a list of job template."
+        os.sys.exit(2)
+    if not args[0] == "help":
+        print "ERROR:argument <subcommand>: invalid."
+        print "Usage: spark-cluster-manage help [subcommand] for more information"
+        os.sys.exit(2)
+
+subcommand = args[0]
+
+if options.help_option:
+    print "usage: spark-job-manage [--version] [--debug] <subcommand> ..."
+    print "Positional arguments:"
+    print "  <subcommand>"
+    print "    submit               Submit a job to cluster."
+    print "    re-submit            Re-submit a job to cluster."
+    print "    list                 Print a list of job execution."
+    print "    delete               Delete a job execution."
+    print "    cancel               Cancel a job execution."
+    print "    template-delete      Delete a job template."
+    print "    template-list        Print a list of job template."
+    os.sys.exit(2)
+elif not env_var and subcommand != "help":
+    print "ERROR: please set environment variables for OS_USERNAME, OS_PASSWORD, OS_TENANT_NAME and OS_AUTH_URL"
+    os.sys.exit(2)
+
+if subcommand == 'submit':
+    if options.debug: print "DEBUG: Checking required arguments"
+    if options.spark_xml_file is False:
+        print "ERROR: please specify --spark-xml-file"
+        os.sys.exit(2)
+    if options.cluster_name is False:
+        print "ERROR: please specify --cluster-name"
+        os.sys.exit(2)
+
+    spark_xml_file = options.spark_xml_file.split("/")[-1]
+    if options.debug: print "DEBUG: Parsing spark XML file"
+    spark_job, arguments, configs, swift = spark_submit_parser(spark_xml_file)
+
+    # Get cluster id for executing jobs
+    if options.debug: print "DEBUG: Fetching Cluster ID"
+    cluster_id = get_cluster_id(options.cluster_name, token_id, tenant_id)
+
+    if swift:
+        # Upload JAR file (swift)
+        swift_upload_url = 'http://cloud.lsr.nectec.or.th:8080/v1/AUTH_%s/%s/' %(tenant_id, swift['bucketname'])
+        sahara_put_swift(spark_job['jarfile'],swift_upload_url,token_id)
+        if c.getinfo(pycurl.HTTP_CODE) == 201:
+            print "Upload job file to swift successful"
+        else:
+            print "ERROR: cannot upload job file to swift"
+            os.sys.exit(2)
+    else:
+        # Upload JAR file (job binary internal)
+        if options.debug: print "DEBUG: Uploading JAR file"
+        job_binary_internal_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/job-binary-internals/' %tenant_id 
+        job_binary_internal_id = sahara_put(spark_job['jarfile'],job_binary_internal_url,token_id)
+        if c.getinfo(pycurl.HTTP_CODE) == 202:
+            print "Upload job binary internal successful"
+        else:
+            print "ERROR: cannot upload job binary internal"
+            if options.debug: print put_response.getvalue()
+            os.sys.exit(2)
+
+    # Create job binary
+    if options.debug: print "DEBUG: Creating job binary"
+    job_binary_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/job-binaries' %tenant_id
+    if swift:
+        job_binary_create_data = {'url': "swift://%s/%s" %(swift['bucketname'], spark_job['jarfile'].split("/")[-1]),
+                                  'name': spark_job['jarfile'].split("/")[-1],
+                                  'extra': {'user':swift['username'], 'password':swift['password']}}
+    else:
+        job_binary_create_data = {'url': "internal-db://%s" %str(job_binary_internal_id),
+                                  'name': spark_job['jarfile'].split("/")[-1]}
+    c.unsetopt(pycurl.CUSTOMREQUEST)
+    c.setopt(pycurl.PUT, 0)
+    results = sahara_post_job(job_binary_url, json.dumps(job_binary_create_data), token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 202:
+        print "Create job binary successful"
+    else:
+        print "ERROR: cannot create job binary"
+        if options.debug: print post_response.getvalue()
+        os.sys.exit(2)
+
+    # Create job
+    if options.debug: print "DEBUG: Creating job template"
+    job_binary_id = json.loads(results)['job_binary']['id']
+    job_create_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/jobs' %tenant_id 
+    job_create_data = {'mains': [str(job_binary_id)],
+                       'type': "Spark",
+                       'name': spark_job['jobname']}
+    results = sahara_post_job(job_create_url, json.dumps(job_create_data), token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 202:
+        print "Create job successful"
+    else:
+        print "ERROR: cannot create job"
+        if options.debug: print post_response.getvalue()
+        os.sys.exit(2)
+
+    # Execute job
+    if options.debug: print "DEBUG: Executing job to cluster"
+    job_create_id = json.loads(results)['job']['id']
+    job_exec_data = {'cluster_id': str(cluster_id),
+                     'job_configs': {}}
+    job_exec_data['job_configs']['configs'] = {'edp.java.main_class': str(spark_job['mainclass'])}
+    if configs:
+        job_exec_data['job_configs']['configs'].update(configs)
+    if swift:
+        job_exec_data['job_configs']['configs']['%s.username' %swift['bucketname']] = swift['username']
+        job_exec_data['job_configs']['configs']['%s.password' %swift['bucketname']] = swift['password']
+    if arguments:
+        job_exec_data['job_configs']['args'] = arguments
+    job_exec_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/jobs/' %tenant_id
+    job_exec_url = job_exec_url + "%s/execute" %job_create_id
+    sahara_post_job(job_exec_url, json.dumps(job_exec_data), token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 202:
+        print 'Job is executing: Please use "./spark-job-manage list" command for checking status'
+    else:
+        print "ERROR: cannot execute job"
+        if options.debug: print post_response.getvalue()
+        os.sys.exit(2)
+
+elif subcommand == 're-submit':
+    if options.debug: print "DEBUG: Checking required arguments"
+    if options.spark_xml_file is False:
+        print "ERROR: please specify --spark-xml-file"
+        os.sys.exit(2)
+    if options.cluster_name is False:
+        print "ERROR: please specify --cluster-name"
+        os.sys.exit(2)
+    if options.template_name is False:
+        print "ERROR: please specify --template-name"
+        os.sys.exit(2)
+
+    # Parse XML file
+    if options.debug: print "DEBUG: Parsing spark XML file"
+    spark_xml_file = options.spark_xml_file.split("/")[-1]
+    spark_job, arguments, configs, swift = spark_resubmit_parser(spark_xml_file)
+
+    print "Ignore Jar file uploading"
+
+    # Get cluster id
+    if options.debug: print "DEBUG: Fetching Cluster ID"
+    cluster_id = get_cluster_id(options.cluster_name, token_id, tenant_id)
+    print "Get cluster id"
+
+    # Get job id
+    if options.debug: print "DEBUG: Fetching Job template ID"
+    job_id = get_job_id(options.template_name, token_id, tenant_id)
+    print "Get job id"
+
+    # Execute job
+    if options.debug: print "DEBUG: Executing job to cluster"
+    job_exec_data = {'cluster_id': str(cluster_id),
+                     'job_configs': {}}
+    job_exec_data['job_configs']['configs'] = {'edp.java.main_class': str(spark_job['mainclass'])}
+    if configs:
+        job_exec_data['job_configs']['configs'].update(configs)
+    if swift:
+        job_exec_data['job_configs']['configs']['%s.username' %swift['bucketname']] = swift['username']
+        job_exec_data['job_configs']['configs']['%s.password' %swift['bucketname']] = swift['password']
+    if arguments:
+        job_exec_data['job_configs']['args'] = arguments
+    job_exec_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/jobs/' %tenant_id
+    job_exec_url = job_exec_url + "%s/execute" %job_id
+    sahara_post_job(job_exec_url, json.dumps(job_exec_data), token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 202:
+        print "Execute job successful"
+    else:
+        print "ERROR: cannot execute job"
+        if options.debug: print post_response.getvalue()
+        os.sys.exit(2)
+
+elif subcommand == 'list':
+    t = PrettyTable(['Job Execution ID', 'Job Template Name','Cluster Name','Status'])
+    t.align['Job Execution ID'] = t.align['Job Template Name'] = t.align['Cluster Name'] = t.align['Status'] = "l"
+    job_exec_list_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/job-executions' %tenant_id
+    if options.debug: print "DEBUG: Requesting job execution list"
+    results_get, results_header = sahara_get(job_exec_list_url, token_id)	
+    if(c.getinfo(pycurl.HTTP_CODE) == 200):
+        results = json.loads(results_get.getvalue())
+        for result in results['job_executions']:
+            cluster_name = get_cluster_name(result['cluster_id'], token_id, tenant_id)
+            job_name = get_job_name(result['job_id'], token_id, tenant_id)
+            t.add_row([result['id'],job_name,cluster_name,result['info']['status']])
+        print t
+    else:
+        print "ERROR: cannot get job execution list"
+        if options.debug: print get_response.getvalue()
+
+elif subcommand == 'cancel':
+    if options.job_id is False:
+        print "ERROR: please specify --job-id"
+        os.sys.exit(2)
+
+    job_cancel_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/job-executions/%s/cancel' %(tenant_id, options.job_id)
+    if options.debug: print "DEBUG: Canceling job execution"
+    sahara_get(job_cancel_url, token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 200:
+        print "Cancel job successful"
+    else:
+        print "ERROR: cannot cancel job"
+        if options.debug: print get_response.getvalue()
+
+elif subcommand == 'delete':
+    if options.job_id is False:
+        print "ERROR: please specify --job-id"
+        os.sys.exit(2)
+
+    job_delete_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/job-executions/%s' %(tenant_id, options.job_id)
+    if options.debug: print "DEBUG: Deleting job execution"
+    sahara_delete(job_delete_url, token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 204:
+        print "Delete job successful"
+    else:
+        print "ERROR: cannot delete job"
+        if options.debug: print get_response.getvalue()
+
+elif subcommand == 'template-list':
+    t = PrettyTable(['ID', 'Job template name'])
+    t.align['ID'] = t.align['Job template name'] = "l"
+    job_list_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/jobs' %tenant_id
+    if options.debug: print "DEBUG: Requesting job template list"
+    results_get, results_header = sahara_get(job_list_url, token_id)	
+    if(c.getinfo(pycurl.HTTP_CODE) == 200):
+        results = json.loads(results_get.getvalue())
+        for result in results['jobs']:
+            t.add_row([result['id'], result['name']])
+        print t
+    else:
+        print "ERROR: cannot get job template list"
+        if options.debug: print get_response.getvalue()
+
+elif subcommand == 'template-delete':
+    if options.template_name is False:
+        print "ERROR: please specify --template-name"
+        os.sys.exit(2)
+
+    template_id = get_job_id(options.template_name, token_id, tenant_id)
+    if template_id is False:
+        print "ERROR: template name not found"
+        os.sys.exit(2)
+    template_delete_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/jobs/%s' %(tenant_id, template_id)
+
+    # fetch all cascading job executions
+    job_executions = get_job_executions_id_list(template_id, token_id, tenant_id)
+    if not options.cascading_delete:
+        if job_executions:
+            print "There are job executions associated with this template"
+            print "Please use 'spark-job-manage template-delete --template-name %s -r'" % options.template_name
+            os.sys.exit(2)
+
+    if options.cascading_delete:
+        # fetch all cascading job binary
+        if options.debug: print "DEBUG: Requesing information for cascading delete"
+        binary_id, binary_internal_id = get_job_binary_id(template_id, token_id, tenant_id)
+
+    # Delete job executions
+    if options.cascading_delete:
+        if options.debug: print "DEBUG: Deleting job executions"
+        job_delete_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/job-executions/' %tenant_id
+        for job_execution in job_executions:
+            sahara_delete(job_delete_url+job_execution, token_id)
+            if c.getinfo(pycurl.HTTP_CODE) == 204:
+                print "Delete job execution successful (%s)" %job_execution
+            else:
+                print "ERROR: cannot delete job execution (%s)" %job_execution
+
+    # Delete job
+    if options.debug: print "DEBUG: Deleting job template"
+    sahara_delete(template_delete_url, token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 204:
+        print "Delete job template successful"
+    else:
+        print "ERROR: cannot delete job template"
+
+    # Delete job binary
+    if options.cascading_delete:
+        if options.debug: print "DEBUG: Deleting job binary"
+        binary_delete_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/job-binaries/%s' %(tenant_id, binary_id)
+        sahara_delete(binary_delete_url, token_id)
+        if c.getinfo(pycurl.HTTP_CODE) == 204:
+            print "Delete job binary successful (%s)" %binary_id
+        else:
+            print "ERROR: cannot delete job binary (%s)" %binary_id
+
+    # Delete job binary internal
+    if options.cascading_delete:
+        if options.debug: print "DEBUG: Deleting job binary internal"
+        binary_internal_url = 'http://cloud.lsr.nectec.or.th:8386/v1.1/%s/job-binary-internals/%s' %(tenant_id, binary_internal_id)
+        sahara_delete(binary_internal_url, token_id)
+        if c.getinfo(pycurl.HTTP_CODE) == 204:
+            print "Delete job binary internal successful (%s)" %binary_internal_id
+        else:
+            print "ERROR: cannot delete job binary internal (%s)" %binary_internal_id
+
+elif subcommand == "help":
+    if len(args) == 2:
+        help_subcommand = args[1]
+    else:
+        help_subcommand = ""
+    if help_subcommand == "submit":
+        print "usage: spark-job-manage submit --cluster-name <cluster_name> --spark-xml-file <spark_xml_file>"
+        print "Submit a job to cluster."
+        print "Required arguments:"
+        print "  --cluster-name            CLUSTER_NAME         Name of Spark Cluster"
+        print "  --spark-xml-file          SPARK_XML_FILE       A Spark XML file"
+
+    elif help_subcommand == "re-submit":
+        print "usage: spark-job-manage re-submit --cluster-name <cluster_name> --spark-xml-file <spark_xml_file> --template-name <template_name>"
+        print "Re-submit a job to cluster."
+        print "Required arguments:"
+        print "  --cluster-name            CLUSTER_NAME         Name of Spark Cluster"
+        print "  --spark-xml-file          SPARK_XML_FILE       A Spark XML file"
+        print "  --template-name           TEMPLATE_NAME        Name of job template"
+
+    elif help_subcommand == "list":
+        print "usage: spark-cluster-manage list"
+        print "Print a list of job execution."
+
+    elif help_subcommand == "delete":
+        print "usage: spark-job-manage delete --job-id <job_id>"
+        print "Delete a job execution."
+        print "Required arguments:"
+        print "  --job-id                   JOB_ID               Job execution id"
+
+    elif help_subcommand == "cancel":
+        print "usage: spark-job-manage cancel --job-id <job_id>"
+        print "Cancel a job execution."
+        print "Required arguments:"
+        print "  --job-id                   JOB_ID               Job execution id"
+
+    elif help_subcommand == "template-delete":
+        print "usage: spark-job-manage template-delete -f --template-name <template_name>"
+        print "Delete a job template."
+        print "Required arguments:"
+        print "  --template-name           TEMPLATE_NAME        Name of job template"
+        print "Optional arguments:"
+        print "  -r                        CASCADING DELETE     Delete cascading job executions and job binary"
+
+    elif help_subcommand == "template-list":
+        print "usage: spark-cluster-manage template-list"
+        print "Print a list of job template."
+
+    else:
+        print "usage: spark-job-manage [--version] [--debug] <subcommand> ..."
+        print "Positional arguments:"
+        print "  <subcommand>"
+        print "    submit               Submit a job to cluster."
+        print "    re-submit            Re-submit a job to cluster."
+        print "    list                 Print a list of job execution."
+        print "    delete               Delete a job execution."
+        print "    cancel               Cancel a job execution."
+        print "    template-delete      Delete a job template."
+        print "    template-list        Print a list of job template."
+
+else:
+    print "ERROR: subcommand not found"
+    os.sys.exit(2)
+
+os.sys.exit(2)	
+pprint.pprint(json.loads(get_response.getvalue()))
+pprint.pprint(json.loads(post_response.getvalue()))
+status_line = response_headers.getvalue().splitlines()[0]
+m = re.match(r'HTTP\/\S*\s*\d+\s*(.*?)\s*$', status_line)
+if m:
+    status_message = m.groups(1)
+else:
+    status_message = ''
+    print status_message

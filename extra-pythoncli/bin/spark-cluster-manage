@@ -1,0 +1,791 @@
+#!/usr/bin/env python
+import pycurl
+from optparse import OptionParser
+import json
+import cStringIO
+import re
+import pprint
+import os
+import sys
+from prettytable import PrettyTable
+import yaml
+import xml.etree.ElementTree as ET
+
+c=pycurl.Curl()
+post_response = cStringIO.StringIO()
+get_response = cStringIO.StringIO()
+response_headers = cStringIO.StringIO()
+
+
+def sahara_post(url,data):
+    post_response.truncate(0)
+    c.setopt(pycurl.URL, str(url))
+    c.setopt(pycurl.POST, 1)
+    c.setopt(pycurl.POSTFIELDS, str(data))
+    c.setopt(pycurl.WRITEFUNCTION, post_response.write)
+    c.unsetopt(pycurl.CUSTOMREQUEST)
+    try:
+        if options.debug:
+            print "DEBUG: Sending POST request"
+            print "DEBUG: [POST] URL: " + url
+            print "DEBUG: [POST] DATA: " + data
+        c.perform()
+    except pycurl.error, error:
+        errno, errstr = error
+        print 'An error occurred: ', errstr	
+
+    return post_response
+
+
+def sahara_get(url, tokenid):
+    get_response.truncate(0)
+    response_headers.truncate(0)
+    token_headers = 'X-Auth-Token:%s' %tokenid
+    c.setopt(pycurl.HTTPHEADER, [str(token_headers)])
+    c.setopt(c.HEADERFUNCTION, response_headers.write)
+    c.setopt(pycurl.URL, str(url))
+    c.setopt(pycurl.HTTPGET, 1)
+    c.setopt(pycurl.WRITEFUNCTION, get_response.write)
+    c.unsetopt(pycurl.CUSTOMREQUEST)
+    try:
+        if options.debug:
+            print "DEBUG: Sending GET request"
+            print "DEBUG: [GET] URL: " + url
+            print "DEBUG: [GET] HEADER: " + token_headers
+        c.perform()
+    except pycurl.error, error:
+        errno, errstr = error
+        print 'An error occurred: ', errstr
+
+    return get_response, response_headers
+
+
+def sahara_delete(url, tokenid):
+    get_response.truncate(0)
+    response_headers.truncate(0)
+    token_headers = 'X-Auth-Token:%s' %tokenid
+    c.setopt(pycurl.HTTPHEADER, [str(token_headers)])
+    c.setopt(c.HEADERFUNCTION, response_headers.write)
+    c.setopt(pycurl.URL, str(url))
+    c.setopt(pycurl.CUSTOMREQUEST, "DELETE")
+    c.setopt(pycurl.WRITEFUNCTION, get_response.write)
+    try:
+        if options.debug:
+            print "DEBUG: Sending DELETE request"
+            print "DEBUG: [DELETE] URL: " + url
+            print "DEBUG: [DELETE] HEADER: " + token_headers
+        c.perform()
+    except pycurl.error, error:
+        errno, errstr = error
+        print 'An error occurred: ', errstr
+
+    return get_response, response_headers
+
+
+def sahara_put(url,data):
+    post_response.truncate(0)
+    c.setopt(pycurl.URL, str(url))
+    c.setopt(pycurl.CUSTOMREQUEST, "PUT")
+    c.setopt(pycurl.POST, 1)
+    c.setopt(pycurl.POSTFIELDS, str(data))
+    c.setopt(pycurl.WRITEFUNCTION, post_response.write)
+    try:
+        if options.debug:
+            print "DEBUG: Sending PUT request"
+            print "DEBUG: [PUT] URL: " + url
+            print "DEBUG: [PUT] DATA: " + data
+        c.perform()
+    except pycurl.error, error:
+        errno, errstr = error
+        print 'An error occurred: ', errstr	
+
+    return post_response    
+
+
+def get_image_id(image_name, token_id, tenant_id):
+    imagelist_url = 'http://controller:8386/v1.1/%s/images' %tenant_id
+    sahara_get(imagelist_url,token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 200:
+        results = get_response.getvalue()
+        results = json.loads(results)['images']
+        for result in results:
+            if result['name'] == image_name:
+                image_id = result['id']
+                break
+            else:
+                image_id = False
+    else:
+        print "ERROR: cannot get image id!!"
+        image_id = False	
+    return image_id
+
+
+def get_internal_netid(internal_netname, token_id, tenant_id):
+    netlist_url = 'http://controller:8774/v2/%s/os-networks' %tenant_id
+    sahara_get(netlist_url,token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 200:
+        results = get_response.getvalue()
+        results = json.loads(results)['networks']
+        for result in results:
+            if result['label'] == internal_netname:
+                internal_net_id = result['id']
+                break
+            else:
+                internal_net_id = False
+    else:
+        print "ERROR: cannot get internal network id!!"	
+        os.sys.exit(2)
+    return internal_net_id
+
+
+def get_flavor_id(flavor_name, token_id, tenant_id):
+    flavorlist_url = 'http://controller:8774/v2/%s/flavors/detail' % tenant_id
+    sahara_get(flavorlist_url,token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 200:
+        results = get_response.getvalue()
+        results = json.loads(results)['flavors']
+        for result in results:
+            if result['name'] == flavor_name:
+                flavor_id = result['id']
+                break
+            else:
+                flavor_id = False
+    else:
+        print "ERROR: cannot get flavor name!!"
+        os.sys.exit(2)
+    return flavor_id
+
+
+def get_cluster_id(cluster_name, token_id, tenant_id):
+    clusterlist_url = 'http://controller:8386/v1.1/%s/clusters' %tenant_id
+    sahara_get(clusterlist_url,token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 200:
+        results = get_response.getvalue()
+        results = json.loads(results)['clusters']
+        for result in results:
+            if result['name'] == cluster_name:
+                cluster_id = result['id']
+                break
+            else:
+                cluster_id = False
+    else:
+        print "ERROR: cannot get cluster name!!"
+        os.sys.exit(2)
+    return cluster_id
+
+
+def get_task_node_count(cluster_name, token_id, tenant_id):
+    clusterlist_url = 'http://controller:8386/v1.1/%s/clusters' %tenant_id
+    sahara_get(clusterlist_url,token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 200:
+        results = get_response.getvalue()
+        results = json.loads(results)['clusters'][0]['node_groups']
+        for result in results:
+            if result['name'] == "task":
+                task_node_count = result['count']
+                break
+            else:
+                task_node_count = False
+    else:
+        print "ERROR: cannot get task node count"
+        os.sys.exit(2)
+    return task_node_count
+
+
+def check_keypair_name(keypair_name, token_id, tenant_id):
+    keypair_status = False
+    keypair_num = 0
+    keypairlist_url = 'http://controller:8774/v2/%s/os-keypairs' % tenant_id
+    sahara_get(keypairlist_url,token_id)
+    results = get_response.getvalue()
+    results = json.loads(results)['keypairs']
+    for result in results:
+        keypair_num += 1
+    results = get_response.getvalue()
+    for i in range(keypair_num):
+        result = json.loads(results)['keypairs'][i]['keypair']
+        if result['name'] == keypair_name:
+            keypair_status = True
+    return keypair_status
+
+
+def prepare_cluster_config(config):
+    cluster_config = open("cluster.cnf","r")
+    for floating_ip_pool_id in cluster_config:
+        floating_ip_id = floating_ip_pool_id
+
+    if options.debug: print "DEBUG: Preparing cluster JSON"
+    if options.debug: print "DEBUG: Checking required options"
+    if config.spark_version is False or config.cluster_name is False or config.image_name is  False or config.internal_net_name is False:
+        print "ERROR: You must specify sparkversion, clustername, imagename and internal network name"
+        os.sys.exit(2)
+    else:
+        image_id = get_image_id(config.image_name, token_id, tenant_id)
+        if image_id is False:
+            print ("ERROR: cannot find image '%s'" %config.image_name)
+            os.sys.exit(2)
+        internal_net_id = get_internal_netid(config.internal_net_name, token_id, tenant_id)
+        if internal_net_id is False:
+            print ("ERROR: connot find internal network '%s'" %config.internal_net_name)
+            os.sys.exit(2)
+
+        # Create a dict for building the JSON string
+        cluster_body = {}
+        cluster_body["plugin_name"] = "spark"
+        cluster_body["hadoop_version"] = str(config.spark_version)
+        cluster_body["name"] = str(config.cluster_name)
+        cluster_body["neutron_management_network"] = str(internal_net_id)
+        cluster_body["default_image_id"] = str(image_id)
+        cluster_body["cluster_configs"] = {}
+        cluster_body["cluster_configs"]["general"] = {}
+        cluster_body["cluster_configs"]["HDFS"] = {}
+        cluster_body["cluster_configs"]["Spark"] = {}
+        cluster_body["node_groups"] = []
+
+        if config.keypair:
+            if options.debug: print "DEBUG: Checking Keypair option"
+            kp_status = check_keypair_name(config.keypair, token_id, tenant_id)
+            if kp_status:
+                cluster_body["user_keypair_id"] = str(config.keypair)
+            else:
+                print "ERROR: keypair name not found"
+                os.sys.exit(2)
+
+        if options.debug: print "DEBUG: Checking node count"
+        worker_count = int(config.task_node_count) + int(config.core_node_count)
+        if worker_count < int(config.replication):
+            print "ERROR: sum of core or task node number must have equal or greater than number of replication"
+            os.sys.exit(2)
+        if config.replication:
+        	cluster_body["cluster_configs"]["HDFS"]["dfs.replication"] = str(config.replication)
+        else:
+        	cluster_body["cluster_configs"]["HDFS"]["dfs.replication"] = 1
+
+        # Read HDFS settings from XML file
+        if config.hdfs_param_file:
+            if options.debug: print "DEBUG: Checking HDFS option file setting"
+            f = open(options.hdfs_param_file, 'r')
+            xmldata = '<settings>' + f.read() + '</settings>'
+
+            settings = ET.fromstring(xmldata)
+            for setting in settings:
+                cluster_body["cluster_configs"]["HDFS"][setting.tag] = setting.text
+
+        if options.debug: print "DEBUG: Configuring master node setting"
+	
+        master_node = {}
+        master_node["count"] = 1
+        master_node["name"] = "master"
+        master_node["floating_ip_pool"] = floating_ip_pool_id 
+        master_node["node_processes"] = ["namenode", "master"]
+        if config.master_node_type:
+        	master_flavor_id = get_flavor_id(config.master_node_type, token_id, tenant_id)
+        	master_node["flavor_id"] = str(master_flavor_id)
+        else :
+        	master_node["flavor_id"] = "2"
+
+        if options.debug: print "DEBUG: Configuring core node setting"
+        core_node = {}
+        core_node["name"] = "core"
+        core_node["floating_ip_pool"] = floating_ip_pool_id
+        core_node["node_processes"] = ["datanode", "slave"]
+        core_node["node_configs"] = {"HDFS":{}}
+        if config.core_node_type:
+        	core_flavor_id = get_flavor_id(config.core_node_type, token_id, tenant_id)
+        	core_node["flavor_id"] = str(core_flavor_id)
+        else:
+        	core_node["flavor_id"] = "2"
+        if config.core_node_count:
+        	core_node["count"] = int(config.core_node_count)
+        else:
+        	core_node["count"] = 1
+
+        if options.debug: print "DEBUG: Configuring task node setting"
+        task_node = {}
+        task_node["name"] = "task"
+        task_node["floating_ip_pool"] = floating_ip_pool_id
+        task_node["node_processes"] = ["slave"]
+        task_node["node_configs"] = {"HDFS":{}}
+        if config.task_node_type:
+        	task_flavor_id = get_flavor_id(config.task_node_type, token_id, tenant_id)
+        	task_node["flavor_id"] = str(task_flavor_id)
+        else:
+        	task_node["flavor_id"] = "2"
+        if config.task_node_count:
+        	task_node["count"] = int(config.task_node_count)
+        else:
+        	task_node["count"] = 0	
+
+        cluster_body["node_groups"].append(master_node)
+        cluster_body["node_groups"].append(core_node)
+        cluster_body["node_groups"].append(task_node)
+        return json.dumps(cluster_body)
+
+
+def show_flavors(flavors_data):
+    t = PrettyTable(['Name', 'Memory(MB)','Disk(GB)','VCPUs'])
+    t.align['Name'] = "l"
+    results = json.loads(flavors_data)['flavors']
+    for result in results:
+        t.add_row([ result['name'], result['ram'], result['disk'], result['vcpus']])
+    print t
+
+
+def show_images(images_data):
+    t = PrettyTable(['Name', 'Username','Tags'])
+    t.align['Name'] = "l"
+    t.align['Username'] = "l"
+    t.align['Tags'] = "l"
+    results = yaml.load(images_data)['images']
+    for result in results:
+        tags_str = str(result['tags'])
+        tags_str = tags_str.replace('[','').replace(']','').replace("'",'')
+        t.add_row([result['name'], result['username'], tags_str])
+    print t
+
+
+def show_netlist(net_data):
+    t = PrettyTable(['Name'])
+    t.align['Name'] = "l"
+    results = yaml.load(net_data)['networks']
+
+    for result in results:
+        if result['router:external'] == False:	
+            t.add_row([result['name']])
+    print t
+
+def show_netlist_id(net_data):
+    cluster_config = open("cluster.cnf","w")
+    results = yaml.load(net_data)['networks']
+    for result in results:
+        if result['router:external'] is True:	
+           cluster_config.write(result['id'])
+    cluster_config.close()
+
+
+def show_version(version):
+    t = PrettyTable(['versions'])
+    t.align['versions'] = "l"
+    results = yaml.load(version)['plugins']
+    for result in results:
+        if result['name'] == 'spark':
+            ver_str = str(result['versions'])
+            ver_str = ver_str.replace('[','').replace(']','').replace("'",'')
+            t.add_row([ver_str])
+    print t
+
+
+def show_clusters(clusters):
+    t = PrettyTable(['Cluster Name','Status'])
+    t.align['Cluster Name'] = "l"
+    t.align['Status'] = "l"
+    results = yaml.load(clusters)['clusters']
+    for result in results:
+        t.add_row([result['name'], result['status']])
+    print t
+
+
+def show_keypairs(keypairs_data):
+    keypairs_num = 0
+    t = PrettyTable(['KeyPair Name'])
+    t.align['KeyPair Name'] = "l"
+    #pprint.pprint(json.loads(get_response.getvalue()))
+    results = json.loads(keypairs_data)['keypairs']
+    for result in results:
+        keypairs_num += 1
+    results = keypairs_data
+    for i in range(keypairs_num):
+        result = json.loads(results)['keypairs'][i]['keypair']
+        t.add_row([ result['name']])
+    print t
+
+
+def get_token_tenant_id(username, tenantname, password):
+    auth_url = 'http://controller:35357/v2.0/tokens'
+    c.setopt(pycurl.HTTPHEADER, ['Accept:application/json','Content-Type:application/json'])
+    auth_request = '{"auth": {"tenantName": '+'"'+str(tenantname)+'"'+', "passwordCredentials": {"username": '+'"'+str(username)+'"'+', "password": '+'"'+str(password)+'"'+'}}}'
+    sahara_post(auth_url,auth_request)
+    if c.getinfo(pycurl.HTTP_CODE) == 200:
+        token_id = json.loads(post_response.getvalue())['access']['token']['id']
+        tenant_id = json.loads(post_response.getvalue())['access']['token']['tenant']['id']
+    else:
+        print "ERROR: authentication failed!!, Please check your username, password and tenant name"
+        os.sys.exit(2)
+    return token_id, tenant_id
+
+parser = OptionParser(usage="usage: %prog [subcommand] arguments",version="%prog 1.0",add_help_option=False)
+parser.add_option("--spark-version",
+                  action="store",
+                  dest="spark_version",
+                  default=False,
+                  help="Number of Spark Version")
+parser.add_option("--cluster-name",
+                  action="store", 
+                  dest="cluster_name",
+                  default=False,
+                  help="Name of Spark Cluster")
+parser.add_option("--master-node-type",
+                  action="store", 
+                  dest="master_node_type",
+                  default=False,
+                  help="Master node flavor eg. m1.tiny ...")
+parser.add_option("--core-node-type",
+                  action="store", 
+                  dest="core_node_type",
+                  default=False,
+                  help="Core node flavor eg. m1.tiny ...")
+parser.add_option("--core-node-count",
+                  action="store", 
+                  dest="core_node_count",
+                  default=False,
+                  help="Number of core node")
+parser.add_option("--task-node-type",
+                  action="store", 
+                  dest="task_node_type",
+                  default=False,
+                  help="Task node flavor eg. m1.tiny ...")
+parser.add_option("--task-node-count",
+                  action="store", 
+                  dest="task_node_count",
+                  default=False,
+                  help="Number of task node")
+parser.add_option("--internal-network-name",
+                  action="store", 
+                  dest="internal_net_name",
+                  default=False,
+                  help="Name of Internal Network")
+parser.add_option("--image-name",
+                  action="store", 
+                  dest="image_name",
+                  default=False,
+                  help="Image name")
+parser.add_option("--keypair-name",
+                  action="store", 
+                  dest="keypair",
+                  default=False,
+                  help="Name of user keyPair")
+parser.add_option("--replication",
+                  action="store", 
+                  dest="replication",
+                  default=False,
+                  help="Number of dfs.replication")
+parser.add_option("--node-count",
+                  action="store",
+                  dest="node_count",
+                  default=False,
+                  help="Number of task node for cluster scaling")
+parser.add_option("--hdfs-param-file",
+                  action="store",
+                  dest="hdfs_param_file",
+                  default=False,
+                  help="HDFS option file")
+parser.add_option("--debug",
+                  action="store_true",
+                  dest="debug",
+                  help="Debug mode")
+parser.add_option("--help",
+                  action="store_true",
+                  dest="help_option",
+                  help="Help option")
+
+(options, args) = parser.parse_args()
+env_var = True
+if options.debug: print "DEBUG: Fetching environment variables"
+try:
+    username = os.environ["OS_USERNAME"]
+    password = os.environ["OS_PASSWORD"]
+    tenantname = os.environ["OS_TENANT_NAME"]
+    token_id, tenant_id = get_token_tenant_id(username, tenantname, password)
+except KeyError:
+    env_var = False
+
+if options.debug: print "DEBUG: Checking number of arguments"
+if len(args) != 1:
+    if len(args) == 0:
+        print "ERROR: argument not specified for parameter"
+        print "usage: spark-cluster-manage [--version] [--debug] <subcommand> ..."
+        print "Positional arguments:"
+        print "  <subcommand>"
+        print "    create               Create a cluster."
+        print "    terminate            Terminate a cluster."
+        print "    scale                Scale a cluster."
+        print "    list                 Print a list of available clusters."
+        print "    image-list           Print a list of available images."
+        print "    flavor-list          Print a list of available flavors."
+        print "    net-list             Print a list of available external networks."
+        print "    sparkversion-list    Print a list of available spark versions."
+        print "    keypair-list         print a list of available key-pairs."
+        os.sys.exit(2)
+    if not args[0] == "help":
+        print args
+        print "ERROR:argument <subcommand>: invalid."
+        print "Usage: spark-cluster-manage help [subcommand] for more information"
+        os.sys.exit(2)
+
+subcommand = args[0]
+
+if options.help_option:
+    print "usage: spark-cluster-manage [--version] [--debug] <subcommand> ..."
+    print "Positional arguments:"
+    print "  <subcommand>"
+    print "    create               Create a cluster."
+    print "    terminate            Terminate a cluster."
+    print "    scale                Scale a cluster."
+    print "    list                 Print a list of available clusters."
+    print "    image-list           Print a list of available images."
+    print "    flavor-list          Print a list of available flavors."
+    print "    net-list             Print a list of available external networks."
+    print "    sparkversion-list    Print a list of available spark versions."
+    print "    keypair-list         print a list of available key-pairs."
+    os.sys.exit(2)
+elif not env_var and subcommand != "help":
+    print "ERROR: please set environment variables for OS_USERNAME, OS_PASSWORD, OS_TENANT_NAME and OS_AUTH_URL"
+    os.sys.exit(2)
+
+if options.debug: print "DEBUG: Checking command"
+if subcommand == 'image-list':
+    imagelist_url = 'http://controller:8386/v1.1/%s/images' %tenant_id
+    if options.debug: print "DEBUG: Requesting image list"
+    sahara_get(imagelist_url,token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 200:
+        response_images = get_response.getvalue()
+        show_images(response_images)
+        
+elif subcommand == 'list':
+    clusterlist_url = 'http://controller:8386/v1.1/%s/clusters' %tenant_id
+    if options.debug: print "DEBUG: Requesting cluster list"
+    sahara_get(clusterlist_url,token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 200:
+        response_clusterlist = get_response.getvalue()
+        show_clusters(response_clusterlist)
+
+elif subcommand == 'flavor-list':
+    flavorlist_url = 'http://controller:8774/v2/%s/flavors/detail' % tenant_id
+    if options.debug: print "DEBUG: Requesting flavor list"
+    sahara_get(flavorlist_url,token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 200:
+        response_flavors = get_response.getvalue()
+        show_flavors(response_flavors)
+
+elif subcommand == 'keypair-list':
+    keypairlist_url = 'http://controller:8774/v2/%s/os-keypairs' % tenant_id
+    if options.debug: print "DEBUG: Requesting keypair list"
+    sahara_get(keypairlist_url,token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 200:
+        response_keypairs = get_response.getvalue()
+        show_keypairs(response_keypairs)
+
+elif subcommand == 'net-list':
+    netlist_url = 'http://controller:9696/v2.0/networks' 
+    if options.debug: print "DEBUG: Requesting internal network list"
+    sahara_get(netlist_url,token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 200:
+        response_net = get_response.getvalue()
+        show_netlist(response_net)
+
+elif subcommand == 'net-list-id':
+    netlist_url = 'http://controller:9696/v2.0/networks' 
+    if options.debug: print "DEBUG: Requesting internal network list"
+    sahara_get(netlist_url,token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 200:
+        response_net = get_response.getvalue()
+        show_netlist_id(response_net)
+
+elif subcommand == 'sparkversion-list':
+    spverlist_url = 'http://controller:8386/v1.1/%s/plugins' % tenant_id
+    if options.debug: print "DEBUG: Requesting spark version list"
+    sahara_get(spverlist_url,token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 200:
+        response_spversion = get_response.getvalue()
+        show_version(response_spversion)
+
+elif subcommand == 'create':
+    cluster_body = prepare_cluster_config(options)
+    createcluster_url = 'http://controller:8386/v1.1/%s/clusters' %tenant_id
+    if options.debug: print "DEBUG: Setting Authentication header"
+    auth_token_header = 'X-Auth-Token: %s' %token_id
+    c.setopt(pycurl.HTTPHEADER, ['Accept:application/json','Content-Type:application/json', str(auth_token_header)])
+    if options.debug: print "DEBUG: Sending start cluster request"
+    sahara_post(createcluster_url,cluster_body)
+    if c.getinfo(pycurl.HTTP_CODE) == 202:
+        print "Cluster is creating: Please use 'spark-cluster-manage list' command for checking status."
+    else:
+        print "ERROR: cannot start cluster"
+        if options.debug: print post_response.getvalue()
+
+elif subcommand == 'terminate':
+    if options.debug: print "DEBUG: Checking required option"
+    if options.cluster_name is False:
+        print "ERROR: please specify --cluster-name"
+        os.sys.exit(2)
+    cluster_id = get_cluster_id(options.cluster_name, token_id, tenant_id)
+    if options.debug: print "DEBUG: Checking cluster id"
+    if cluster_id is False:
+        print "ERROR: %s does not exist" %options.cluster_name
+        os.sys.exit(2)
+
+    # Get ids for all floating ip
+    if options.debug: print "DEBUG: Getting all floating ips"
+    cluster_url = 'http://controller:8386/v1.1/%s/clusters/%s' %(tenant_id, cluster_id)
+    sahara_get(cluster_url, token_id)
+    node_groups = json.loads(get_response.getvalue())['cluster']['node_groups']
+    floating_ip_url = 'http://controller:8774/v2/%s/os-floating-ips' %tenant_id
+    sahara_get(floating_ip_url, token_id)
+    floating_ips = json.loads(get_response.getvalue())['floating_ips']    
+    floating_ip_ids = []
+    for node_group in node_groups:
+        for instance in node_group['instances']:
+            for floating_ip in floating_ips:
+                if floating_ip['ip'] == instance['management_ip']:
+                    floating_ip_ids.append([floating_ip['id'], floating_ip['ip']])
+                    floating_ips.remove(floating_ip)
+                    break
+
+    if options.debug: print "DEBUG: Sending terminate cluster request"
+    sahara_delete(cluster_url, token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 204:
+        print "Terminate cluster successful"
+    else:
+        print "ERROR: cannot terminate cluster"
+        if options.debug: print get_response.getvalue()
+
+    if options.debug: print "DEBUG: Deallocating floating ips"
+    for floating_ip_id in floating_ip_ids:
+        sahara_delete(floating_ip_url+'/'+floating_ip_id[0], token_id)
+        if c.getinfo(pycurl.HTTP_CODE) == 202:
+            print "Deallocated floating IP (%s)" %(floating_ip_id[1])
+        elif c.getinfo(pycurl.HTTP_CODE) == 500:
+            # Check if floating ip still not deallocated
+            error = get_response.getvalue()
+            sahara_get(floating_ip_url+'/'+floating_ip_id[0], token_id)
+            if not c.getinfo(pycurl.HTTP_CODE) == 404:
+                print "ERROR: cannot deallocate floating IP (%s)" %(floating_ip_id[1])
+                if options.debug: print error
+        else:
+            print "ERROR: cannot deallocate floating IP (%s)" %(floating_ip_id[1])
+            if options.debug: print get_response.getvalue()
+
+elif subcommand == 'scale':
+    if options.debug: print "DEBUG: Checking required option"
+    if options.cluster_name is False:
+        print "ERROR: please specify --cluster-name"
+        os.sys.exit(2)
+    if options.node_count is False:
+        print "ERROR: please specify --node-count"
+        os.sys.exit(2)
+    cluster_id = get_cluster_id(options.cluster_name, token_id, tenant_id)
+    task_node_count = get_task_node_count(options.cluster_name, token_id, tenant_id)
+    if options.debug: print "DEBUG: Checking cluster id"
+    if cluster_id is False:
+        print "ERROR: %s does not exist" %options.cluster_name
+        os.sys.exit(2)
+    if options.debug: print "DEBUG: Checking task node number"
+    if task_node_count is False or task_node_count == 0:
+        print "ERROR: cannot scale task node for this cluster"
+        os.sys.exit(2)
+    if task_node_count == int(options.node_count):
+        print "ERROR: This cluster already has %d task node" %task_node_count
+        os.sys.exit(2)
+    
+    scale_url = 'http://controller:8386/v1.1/%s/clusters/%s' %(tenant_id, cluster_id)
+    if options.debug: print "DEBUG: Create scale cluster setting"
+    scale_body = '{"resize_node_groups":[{"count":'+options.node_count+',"name": "task"}]}'
+    if options.debug: print "DEBUG: Setting Authentication header"
+    auth_token_header = 'X-Auth-Token: %s' %token_id
+    c.setopt(pycurl.HTTPHEADER, ['Accept:application/json','Content-Type:application/json', str(auth_token_header)])
+    if options.debug: print "DEBUG: Sending scale cluster request"
+    sahara_put(scale_url, scale_body)
+    if c.getinfo(pycurl.HTTP_CODE) == 202:
+        print "Scale cluster successful"
+    else:
+        print "ERROR: cannot scale cluster"
+        if options.debug: print post_response.getvalue()
+        
+elif subcommand == "help":
+    if len(args) == 2:
+        help_subcommand = args[1]
+    else:
+        help_subcommand = ""
+    if help_subcommand == "create":
+        print "usage: spark-cluster-manage create --cluster-name <cluster_name> --spark-version <spark_version> --image-name <image_name> --internal-network-name <network_name>"
+        print "Create a cluster."
+        print "Required arguments:"
+        print "  --cluster-name            CLUSTER_NAME         Name of Spark Cluster"
+        print "  --spark-version           SPARK_VERSION        Number of Spark Version"
+        print "  --image-name              IMAGE_NAME           Image name"
+        print "  --internal-network-name   NETWORK_NAME         Name of Internal Network"
+        print "Optional arguments:"
+        print "  --keypair-name            KEYPAIR_NAME         Name of user keyPair"
+        print "  --replication             REPLICATION_NUMBER   Number of dfs.replication"
+        print "  --master-node-type        NODE_TYPE            Master node flavor eg. m1.tiny ..."
+        print "  --core-node-type          NODE_TYPE            Core node flavor eg. m1.tiny ..."
+        print "  --core-node-count         NODE_NUMBER          Number of core node"
+        print "  --task-node-type          NODE_TYPE            Task node flavor eg. m1.tiny ..."
+        print "  --task-node-count         NODE_NUMBER          Number of task node"
+        print "  --hdfs-param-file         XML_FILE             XML file for HDFS settings"
+
+    elif help_subcommand == "terminate":
+        print "usage: spark-cluster-manage terminate --cluster-name <cluster_name>"
+        print "Terminate a cluster."
+        print "Required arguments:"
+        print "  --cluster-name            CLUSTER_NAME    Name of the cluster to terminate"
+
+    elif help_subcommand == "scale":
+        print "usage: spark-cluster-manage scale --cluster-name <cluster_name> --node-count <new_number_of_task_node>"
+        print "Scale a cluster."
+        print "Required arguments:"
+        print "  --cluster-name            CLUSTER_NAME    Name of the cluster to scale"
+        print "  --node-count              NODE_NUMBER     Number of task node"
+
+    elif help_subcommand == "list":
+        print "usage: spark-cluster-manage list"
+        print "Print a list of available clusters."
+
+    elif help_subcommand == "image-list":
+        print "usage: spark-cluster-manage image-list"
+        print "Print a list of available images."
+
+    elif help_subcommand == "flavor-list":
+        print "usage: spark-cluster-manage flavor-list"
+        print "Print a list of available flavros."
+
+    elif help_subcommand == "net-list":
+        print "usage: spark-cluster-manage net-list"
+        print "Print a list of available external networks."
+
+    elif help_subcommand == "sparkversion-list":
+        print "usage: spark-cluster-manage sparkversion-list"
+        print "Print a list of available spark versions."
+
+    elif help_subcommand == "keypair-list":
+        print "usage: spark-cluster-manage keypair-list"
+        print "Print a list of available key-pairs."
+
+    else:
+        print "usage: spark-cluster-manage [--version] [--debug] <subcommand> ..."
+        print "Positional arguments:"
+        print "  <subcommand>"
+        print "    create               Create a cluster."
+        print "    terminate            Terminate a cluster."
+        print "    scale                Scale a cluster."
+        print "    list                 Print a list of available clusters."
+        print "    image-list           Print a list of available images."
+        print "    flavor-list          Print a list of available flavors."
+        print "    net-list             Print a list of available external networks."
+        print "    sparkversion-list    Print a list of available spark versions."
+        print "    keypair-list         print a list of available key-pairs."
+
+else:
+    print "ERROR: subcommand not found. Please use 'spark-cluster-manage help' for more details"
+    os.sys.exit(2)
+
+os.sys.exit(2)	
+pprint.pprint(json.loads(get_response.getvalue()))
+pprint.pprint(json.loads(post_response.getvalue()))
+status_line = response_headers.getvalue().splitlines()[0]
+m = re.match(r'HTTP\/\S*\s*\d+\s*(.*?)\s*$', status_line)
+if m:
+    status_message = m.groups(1)
+else:
+    status_message = ''
+    print status_message
