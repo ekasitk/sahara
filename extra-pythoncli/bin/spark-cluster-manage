@@ -191,6 +191,18 @@ def get_task_node_count(cluster_name, token_id, tenant_id):
         os.sys.exit(2)
     return task_node_count
 
+def get_floating_ip_pool_id(token_id):
+    netlist_url = 'http://controller:9696/v2.0/networks'
+    if options.debug: print "DEBUG: Requesting internal network list"
+    sahara_get(netlist_url,token_id)
+    if c.getinfo(pycurl.HTTP_CODE) == 200:
+        response_net = get_response.getvalue()
+        #show_netlist_id(response_net)
+	results = yaml.load(response_net)['networks']
+    	for result in results:
+        	if result['router:external'] is True:
+           		floating_ip_pool_id =  result['id']
+    return floating_ip_pool_id
 
 def check_keypair_name(keypair_name, token_id, tenant_id):
     keypair_status = False
@@ -210,10 +222,7 @@ def check_keypair_name(keypair_name, token_id, tenant_id):
 
 
 def prepare_cluster_config(config):
-    cluster_config = open("cluster.cnf","r")
-    for floating_ip_pool_id in cluster_config:
-        floating_ip_id = floating_ip_pool_id
-
+    floating_ip_pool_id = get_floating_ip_pool_id(token_id)
     if options.debug: print "DEBUG: Preparing cluster JSON"
     if options.debug: print "DEBUG: Checking required options"
     if config.spark_version is False or config.cluster_name is False or config.image_name is  False or config.internal_net_name is False:
@@ -582,14 +591,6 @@ elif subcommand == 'net-list':
     if c.getinfo(pycurl.HTTP_CODE) == 200:
         response_net = get_response.getvalue()
         show_netlist(response_net)
-
-elif subcommand == 'net-list-id':
-    netlist_url = 'http://controller:9696/v2.0/networks' 
-    if options.debug: print "DEBUG: Requesting internal network list"
-    sahara_get(netlist_url,token_id)
-    if c.getinfo(pycurl.HTTP_CODE) == 200:
-        response_net = get_response.getvalue()
-        show_netlist_id(response_net)
 
 elif subcommand == 'sparkversion-list':
     spverlist_url = 'http://controller:8386/v1.1/%s/plugins' % tenant_id
