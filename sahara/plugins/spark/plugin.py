@@ -84,7 +84,7 @@ class SparkProvider(p.ProvisioningPluginBase):
 
         sl_count = sum([ng.count for ng
                         in utils.get_node_groups(cluster, "slave")])
-
+	
         if sl_count < 1:
             raise ex.InvalidComponentCountException("Spark slave",
                                                     _("1 or more"),
@@ -101,6 +101,7 @@ class SparkProvider(p.ProvisioningPluginBase):
         sm_instance = utils.get_instance(cluster, "master")
         dn_instances = utils.get_instances(cluster, "datanode")
 
+
         # Start the name node
         with remote.get_remote(nn_instance) as r:
             run.format_namenode(r)
@@ -113,14 +114,21 @@ class SparkProvider(p.ProvisioningPluginBase):
                  cluster.name)
 
         with remote.get_remote(nn_instance) as r:
-            r.execute_command("sudo -u hdfs hdfs dfs -mkdir -p /user/$USER/")
-            r.execute_command("sudo -u hdfs hdfs dfs -chown $USER "
+            #r.execute_command("sudo -u hdfs hdfs dfs -mkdir -p /user/$USER/")
+            r.execute_command("sudo -u centos JAVA_HOME=/usr/lib/jvm/java-1.7.0-openjdk.x86_64 /opt/hadoop/bin/hadoop fs -mkdir /user/$USER/")
+            #r.execute_command("sudo -u hdfs hdfs dfs -chown $USER "
+            #                  "/user/$USER/")
+            r.execute_command("sudo -u centos JAVA_HOME=/usr/lib/jvm/java-1.7.0-openjdk.x86_64 /opt/hadoop/bin/hadoop fs -chown $USER "
                               "/user/$USER/")
 
         # start spark nodes
         if sm_instance:
+	    nn_hostname = nn_instance.hostname()
             with remote.get_remote(sm_instance) as r:
                 run.start_spark_master(r, self._spark_home(cluster))
+		run.start_tasktracker(r)
+		#run.start_oozie(r, nn_hostname)
+		run.start_dns_incrond_nginx(r)
                 LOG.info(_LI("Spark service at '%s' has been started"),
                          sm_instance.hostname())
 
@@ -209,8 +217,11 @@ class SparkProvider(p.ProvisioningPluginBase):
         ng_extra = extra[instance.node_group.id]
 
         files_hadoop = {
-            '/etc/hadoop/conf/core-site.xml': ng_extra['xml']['core-site'],
-            '/etc/hadoop/conf/hdfs-site.xml': ng_extra['xml']['hdfs-site'],
+            #'/etc/hadoop/conf/core-site.xml': ng_extra['xml']['core-site'],
+            '/opt/hadoop/conf/core-site.xml': ng_extra['xml']['core-site'],
+            #'/etc/hadoop/conf/hdfs-site.xml': ng_extra['xml']['hdfs-site'],
+            '/opt/hadoop/conf/hdfs-site.xml': ng_extra['xml']['hdfs-site'],
+            '/opt/hadoop/conf/mapred-site.xml': ng_extra['xml']['mapred-site'],
         }
 
         sp_home = self._spark_home(cluster)
@@ -238,13 +249,15 @@ class SparkProvider(p.ProvisioningPluginBase):
                                                      '/dfs/nn'))
 
         hdfs_dir_cmd = ('sudo mkdir -p %(nn_path)s %(dn_path)s &&'
-                        'sudo chown -R hdfs:hadoop %(nn_path)s %(dn_path)s &&'
+                        #'sudo chown -R hdfs:hadoop %(nn_path)s %(dn_path)s &&'
+                        'sudo chown -R centos:centos %(nn_path)s %(dn_path)s &&'
                         'sudo chmod 755 %(nn_path)s %(dn_path)s' %
                         {"nn_path": nn_path, "dn_path": dn_path})
 
         with remote.get_remote(instance) as r:
             r.execute_command(
-                'sudo chown -R $USER:$USER /etc/hadoop'
+                #'sudo chown -R $USER:$USER /etc/hadoop'
+                'sudo chown -R $USER:$USER /opt/hadoop'
             )
             r.execute_command(
                 'sudo chown -R $USER:$USER %s' % sp_home
@@ -264,11 +277,11 @@ class SparkProvider(p.ProvisioningPluginBase):
 
             if c_helper.is_data_locality_enabled(cluster):
                 r.write_file_to(
-                    '/etc/hadoop/topology.sh',
+                    '/opt/hadoop/conf/topology.sh',
                     f.get_file_text(
                         'plugins/spark/resources/topology.sh'))
                 r.execute_command(
-                    'sudo chmod +x /etc/hadoop/topology.sh'
+                    'sudo chmod +x /opt/hadoop/conf/topology.sh'
                 )
 
             self._write_topology_data(r, cluster, extra)
@@ -299,7 +312,7 @@ class SparkProvider(p.ProvisioningPluginBase):
     def _write_topology_data(self, r, cluster, extra):
         if c_helper.is_data_locality_enabled(cluster):
             topology_data = extra['topology_data']
-            r.write_file_to('/etc/hadoop/topology.data', topology_data)
+            r.write_file_to('/opt/hadoop/conf/topology.data', topology_data)
 
     def _push_master_configs(self, r, cluster, extra, instance):
         node_processes = instance.node_group.node_processes
@@ -308,7 +321,7 @@ class SparkProvider(p.ProvisioningPluginBase):
             self._push_namenode_configs(cluster, r)
 
     def _push_namenode_configs(self, cluster, r):
-        r.write_file_to('/etc/hadoop/dn.incl',
+        r.write_file_to('/opt/hadoop/conf/dn.incl',
                         utils.generate_fqdn_host_names(
                             utils.get_instances(cluster, "datanode")))
 
@@ -368,14 +381,15 @@ class SparkProvider(p.ProvisioningPluginBase):
         master = utils.get_instance(cluster, "master")
         r_master = remote.get_remote(master)
 
-        run.stop_spark(r_master, self._spark_home(cluster))
+        #run.stop_spark(r_master, self._spark_home(cluster))
 
         self._setup_instances(cluster, instances)
         nn = utils.get_instance(cluster, "namenode")
         run.refresh_nodes(remote.get_remote(nn), "dfsadmin")
-        self._start_slave_datanode_processes(instances)
+        #self._start_slave_datanode_processes(instances)
 
         run.start_spark_master(r_master, self._spark_home(cluster))
+        run.start_tasktracker(r_master)
         LOG.info(_LI("Spark master service at '%s' has been restarted"),
                  master.hostname())
 

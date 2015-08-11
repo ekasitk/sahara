@@ -156,7 +156,7 @@ creations/deletions), or "all".</description>
 </property>
 
 <property>
-  <name>dfs.namenode.name.dir</name>
+  <name>dfs.name.dir</name>
   <value>${hadoop.tmp.dir}/dfs/name</value>
   <description>Determines where on the local filesystem the DFS name node
       should store the name table(fsimage).  If this is a comma-delimited list
@@ -243,7 +243,7 @@ creations/deletions), or "all".</description>
 
 
 <property>
-  <name>dfs.datanode.data.dir</name>
+  <name>dfs.data.dir</name>
   <value>${hadoop.tmp.dir}/dfs/data</value>
   <description>Determines where on the local filesystem an DFS data node
   should store its blocks.  If this is a comma-delimited

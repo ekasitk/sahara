@@ -55,7 +55,7 @@ def decommission_sl(master, inst_to_be_deleted, survived_inst):
 
 def decommission_dn(nn, inst_to_be_deleted, survived_inst):
     with remote.get_remote(nn) as r:
-        r.write_file_to('/etc/hadoop/dn.excl',
+        r.write_file_to('/opt/hadoop/conf/dn.excl',
                         utils.generate_fqdn_host_names(
                             inst_to_be_deleted))
         run.refresh_nodes(remote.get_remote(nn), "dfsadmin")
@@ -68,7 +68,7 @@ def decommission_dn(nn, inst_to_be_deleted, survived_inst):
 
         while timeutils.delta_seconds(s_time, timeutils.utcnow()) < timeout:
             cmd = r.execute_command(
-                "sudo -u hdfs hadoop dfsadmin -report")
+                "sudo -u centos hadoop dfsadmin -report")
             all_found = True
             datanodes_info = parse_dfs_report(cmd[1])
             for i in inst_to_be_deleted:
@@ -79,10 +79,10 @@ def decommission_dn(nn, inst_to_be_deleted, survived_inst):
                         break
 
             if all_found:
-                r.write_files_to({'/etc/hadoop/dn.incl':
+                r.write_files_to({'/opt/hadoop/conf/dn.incl':
                                  utils.
                                  generate_fqdn_host_names(survived_inst),
-                                  '/etc/hadoop/dn.excl': "",
+                                  '/opt/hadoop/conf/dn.excl': "",
                                   })
                 break
             context.sleep(3)

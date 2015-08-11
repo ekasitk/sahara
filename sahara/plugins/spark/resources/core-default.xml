@@ -149,7 +149,7 @@
 <!-- file system properties -->
 
 <property>
-  <name>fs.defaultFS</name>
+  <name>fs.default.name</name>
   <value>file:///</value>
   <description>The name of the default file system.  A URI whose
   scheme and authority determine the FileSystem implementation.  The

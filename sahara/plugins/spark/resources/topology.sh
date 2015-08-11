@@ -1,5 +1,6 @@
 #!/bin/bash
-HADOOP_CONF=/etc/hadoop
+#HADOOP_CONF=/etc/hadoop
+HADOOP_CONF=/opt/hadoop/conf
 
 while [ $# -gt 0 ] ; do
   nodeArg=$1

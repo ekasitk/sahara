@@ -21,6 +21,7 @@ from sahara.i18n import _LI
 from sahara.openstack.common import log as logging
 from sahara.plugins.general import utils
 from sahara.plugins import provisioning as p
+from sahara.plugins.spark import oozie_helper as o_h
 from sahara.topology import topology_helper as topology
 from sahara.utils import types as types
 from sahara.utils import xmlutils as x
@@ -36,8 +37,17 @@ CORE_DEFAULT = x.load_hadoop_xml_defaults(
 HDFS_DEFAULT = x.load_hadoop_xml_defaults(
     'plugins/spark/resources/hdfs-default.xml')
 
+# Append MapReduce XML file
+MAPRED_DEFAULT = x.load_hadoop_xml_defaults(
+    'plugins/spark/resources/mapred-default.xml')
+
+# Append OOZIE configs for core-site.xml
+CORE_DEFAULT += o_h.OOZIE_CORE_DEFAULT
+
+# Append MapReduce 
 XML_CONFS = {
-    "HDFS": [CORE_DEFAULT, HDFS_DEFAULT]
+    "HDFS": [CORE_DEFAULT, HDFS_DEFAULT],
+    "MapReduce": [MAPRED_DEFAULT]
 }
 
 SPARK_CONFS = {
@@ -124,8 +134,13 @@ DECOMMISSIONING_TIMEOUT = p.Config('Decommissioning Timeout', 'general',
                                                ' decommissioning operation'
                                                ' during scaling, in seconds')
 
-HIDDEN_CONFS = ['fs.defaultFS', 'dfs.namenode.name.dir',
-                'dfs.datanode.data.dir']
+#HIDDEN_CONFS = ['fs.defaultFS', 'dfs.namenode.name.dir',
+#                'dfs.datanode.data.dir']
+
+HIDDEN_CONFS = ['fs.default.name', 'dfs.name.dir', 'dfs.data.dir',
+                'mapred.job.tracker', 'mapred.system.dir', 'mapred.local.dir',
+                'hadoop.proxyuser.centos.hosts',
+                'hadoop.proxyuser.centos.groups']
 
 CLUSTER_WIDE_CONFS = ['dfs.block.size', 'dfs.permissions', 'dfs.replication',
                       'dfs.replication.min', 'dfs.replication.max',
@@ -233,14 +248,34 @@ def generate_xml_configs(configs, storage_path, nn_hostname, hadoop_port):
         hadoop_port = 8020
 
     cfg = {
-        'fs.defaultFS': 'hdfs://%s:%s' % (nn_hostname, str(hadoop_port)),
-        'dfs.namenode.name.dir': extract_hadoop_path(storage_path,
-                                                     '/dfs/nn'),
-        'dfs.datanode.data.dir': extract_hadoop_path(storage_path,
-                                                     '/dfs/dn'),
-        'hadoop.tmp.dir': extract_hadoop_path(storage_path,
-                                              '/dfs'),
+        #'fs.defaultFS': 'hdfs://%s:%s' % (nn_hostname, str(hadoop_port)),
+        #'dfs.namenode.name.dir': extract_hadoop_path(storage_path,
+        #                                             '/dfs/nn'),
+        #'dfs.datanode.data.dir': extract_hadoop_path(storage_path,
+        #                                             '/dfs/dn'),
+        #'hadoop.tmp.dir': extract_hadoop_path(storage_path,
+        #                                      '/dfs'),
+	'fs.default.name': 'hdfs://%s:%s' % (nn_hostname, str(hadoop_port)),
+        'dfs.name.dir': extract_hadoop_path(storage_path,
+                                            '/dfs/nn'),
+        'dfs.data.dir': extract_hadoop_path(storage_path,
+                                            '/dfs/dn'),
     }
+    # Check MapReduce Job Tracker 
+    if nn_hostname:
+	mr_cfg = {
+            'mapred.job.tracker': '%s:8021' % nn_hostname,
+        }
+        cfg.update(mr_cfg)
+
+    if nn_hostname:
+	o_cfg = {
+            'hadoop.proxyuser.centos.hosts': "*",
+            'hadoop.proxyuser.centos.groups': '*',
+        }
+        cfg.update(o_cfg)
+        LOG.debug('Applied Oozie configs for core-site.xml')
+        #cfg.update(o_h.get_oozie_required_xml_configs())
 
     # inserting user-defined configs
     for key, value in extract_hadoop_xml_confs(configs):
@@ -248,15 +283,19 @@ def generate_xml_configs(configs, storage_path, nn_hostname, hadoop_port):
 
     # invoking applied configs to appropriate xml files
     core_all = CORE_DEFAULT
+    mapred_all = MAPRED_DEFAULT
 
     if CONF.enable_data_locality:
         cfg.update(topology.TOPOLOGY_CONFIG)
         # applying vm awareness configs
         core_all += topology.vm_awareness_core_config()
+	mapred_all += topology.vm_awareness_mapred_config()
 
     xml_configs = {
         'core-site': x.create_hadoop_xml(cfg, core_all),
+        'mapred-site': x.create_hadoop_xml(cfg, mapred_all),
         'hdfs-site': x.create_hadoop_xml(cfg, HDFS_DEFAULT)
+        #'mapred-site': x.create_hadoop_xml(cfg, mapred_all)
     }
 
     return xml_configs
@@ -356,21 +395,24 @@ def generate_hadoop_setup_script(storage_paths, env_configs):
     for line in env_configs:
         if 'HADOOP' in line:
             script_lines.append('echo "%s" >> /tmp/hadoop-env.sh' % line)
-    script_lines.append("cat /etc/hadoop/hadoop-env.sh >> /tmp/hadoop-env.sh")
-    script_lines.append("cp /tmp/hadoop-env.sh /etc/hadoop/hadoop-env.sh")
+    #script_lines.append("cat /etc/hadoop/hadoop-env.sh >> /tmp/hadoop-env.sh")
+    script_lines.append("cat /opt/hadoop/conf/hadoop-env.sh >> /tmp/hadoop-env.sh")
+    #script_lines.append("cp /tmp/hadoop-env.sh /etc/hadoop/hadoop-env.sh")
+    script_lines.append("cp /tmp/hadoop-env.sh /opt/hadoop/conf/hadoop-env.sh")
 
     hadoop_log = storage_paths[0] + "/log/hadoop/\$USER/"
     script_lines.append('sed -i "s,export HADOOP_LOG_DIR=.*,'
-                        'export HADOOP_LOG_DIR=%s," /etc/hadoop/hadoop-env.sh'
+                        'export HADOOP_LOG_DIR=%s," /opt/hadoop/conf/hadoop-env.sh'
                         % hadoop_log)
 
     hadoop_log = storage_paths[0] + "/log/hadoop/hdfs"
     script_lines.append('sed -i "s,export HADOOP_SECURE_DN_LOG_DIR=.*,'
                         'export HADOOP_SECURE_DN_LOG_DIR=%s," '
-                        '/etc/hadoop/hadoop-env.sh' % hadoop_log)
+                        '/opt/hadoop/conf/hadoop-env.sh' % hadoop_log)
 
     for path in storage_paths:
-        script_lines.append("chown -R hadoop:hadoop %s" % path)
+        #script_lines.append("chown -R hadoop:hadoop %s" % path)
+        script_lines.append("chown -R centos:centos %s" % path)
         script_lines.append("chmod -R 755 %s" % path)
     return "\n".join(script_lines)
 
